@@ -251,12 +251,16 @@ kein MQTT.
 
 ## Lizenz
 
-**Für dieses Projekt wurde noch keine Lizenz gewählt.** Solange keine `LICENSE`-Datei beiliegt,
-sind keine Nutzungs-, Änderungs- oder Verbreitungsrechte eingeräumt.
+**Kestrel NVR** steht unter der **MIT-Lizenz mit Commons Clause** – der vollständige Lizenztext befindet sich in der Datei [LICENSE](LICENSE).
 
-Fremde Bestandteile:
+- **Frei nutzbar, veränderbar und selbst hostbar:** Privatpersonen, Organisationen und Unternehmen dürfen Kestrel NVR kostenlos nutzen, forken und anpassen (auch für den internen geschäftlichen Einsatz).
+- **Kein Verkauf oder bezahltes Hosting:** Es ist nicht gestattet, die Software zu verkaufen, gegen Gebühr zu lizenzieren oder als kostenpflichtigen Hosting-/Cloud-Dienst anzubieten.
+- **Namensnennung erforderlich:** Alle Forks, Kopien und abgeleiteten Versionen müssen den ursprünglichen Urheberrechtshinweis sowie den Lizenztext beibehalten.
 
+Drittanbieter-Komponenten:
 
-Das Erkennungsmodell `models/yolox_tiny.onnx` stammt aus dem Projekt YOLOX (Megvii, Apache-2.0).
-Die Komponenten unter `web/src/components/reactbits/` stammen von React Bits (MIT + Commons Clause,
-Lizenztext liegt im selben Ordner).
+- Erkennungsmodelle (`models/yolox_tiny.onnx` und die zum Download angebotenen Modelle) stammen aus dem
+  YOLOX-Projekt von Megvii, Apache-2.0.
+- Die Komponenten in `web/src/components/reactbits/` stammen von React Bits, MIT + Commons Clause; der
+  Lizenztext liegt in diesem Ordner.
+- Laufzeitabhängigkeiten sind in `requirements.txt` und `web/package.json` mit ihren jeweiligen Lizenzen aufgeführt.

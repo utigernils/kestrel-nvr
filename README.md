@@ -271,9 +271,11 @@ No audio, no MxPEG, no video export (single frames can be downloaded), no zones/
 
 ## License
 
-**No license has been chosen for this project yet.** Until the author adds a `LICENSE` file, no
-rights to use, modify or distribute the code are granted. (Author: pick a license before
-publishing – note the Commons Clause of the bundled React Bits components below when choosing.)
+**Kestrel NVR** is licensed under the **MIT License with the Commons Clause** – see the [LICENSE](LICENSE) file for the full text.
+
+- **Free to use, modify, and self-host:** Individuals, organizations, and companies may freely run, fork, and modify Kestrel NVR (including for internal commercial/business security).
+- **No selling or paid hosting:** You may not sell the software, relicense it for a fee, or offer it as a paid/managed hosting service.
+- **Attribution required:** All forks, copies, and modified versions must retain the original copyright notice and license text pointing back to this source.
 
 Third-party parts:
 
