@@ -1,0 +1,102 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Kestrel NVR verbinden",
+        "description": "Adresse des Kestrel-Rekorders eingeben. Danach muss ein Administrator die Anfrage in Kestrel erlauben.",
+        "data": {
+          "host": "IP-Adresse oder Hostname",
+          "port": "Port",
+          "ssl": "HTTPS verwenden",
+          "verify_ssl": "Zertifikat prüfen"
+        }
+      },
+      "link": {
+        "title": "In Kestrel erlauben",
+        "description": "Öffne {url}, melde dich als Administrator an und erlaube die Anfrage von Home Assistant.\n\nPrüfe, dass dort dieser Code steht: **{code}**\n\nDanach hier auf Absenden klicken."
+      },
+      "reauth_confirm": {
+        "title": "Kestrel erneut verbinden",
+        "description": "Der Zugriff wurde in Kestrel entzogen oder ist ungültig. Absenden startet eine neue Anfrage."
+      }
+    },
+    "error": {
+      "cannot_connect": "Kestrel ist unter dieser Adresse nicht erreichbar.",
+      "not_approved": "Noch nicht erlaubt. Bitte die Anfrage in Kestrel bestätigen und erneut absenden.",
+      "expired": "Die Anfrage war abgelaufen. Es wurde eine neue mit neuem Code gestellt.",
+      "rate_limited": "Zu viele Anfragen. Bitte etwas warten.",
+      "unknown": "Unerwartete Antwort von Kestrel."
+    },
+    "abort": {
+      "already_configured": "Dieser Rekorder ist bereits eingerichtet.",
+      "denied": "Die Anfrage wurde in Kestrel abgelehnt.",
+      "reauth_successful": "Erneut verbunden."
+    }
+  },
+  "entity": {
+    "binary_sensor": {
+      "online": {
+        "name": "Verbindung"
+      },
+      "person": {
+        "name": "Person"
+      },
+      "vehicle": {
+        "name": "Fahrzeug"
+      },
+      "animal": {
+        "name": "Tier"
+      },
+      "object": {
+        "name": "Objekt erkannt"
+      },
+      "storage_problem": {
+        "name": "Speicherproblem"
+      }
+    },
+    "sensor": {
+      "fps": {
+        "name": "Bildrate"
+      },
+      "last_event": {
+        "name": "Letztes Ereignis"
+      },
+      "last_event_time": {
+        "name": "Letztes Ereignis Zeit"
+      },
+      "storage_used": {
+        "name": "Aufnahmen belegt"
+      },
+      "disk_free": {
+        "name": "Freier Speicher"
+      },
+      "capacity_days": {
+        "name": "Speicher reicht für"
+      },
+      "cpu_percent": {
+        "name": "CPU"
+      },
+      "version": {
+        "name": "Version"
+      }
+    },
+    "image": {
+      "last_event": {
+        "name": "Letztes Ereignis"
+      }
+    },
+    "event": {
+      "detection": {
+        "name": "Erkennung",
+        "state_attributes": {
+          "event_type": {
+            "state": {
+              "detected": "Erkannt",
+              "ended": "Beendet"
+            }
+          }
+        }
+      }
+    }
+  }
+}

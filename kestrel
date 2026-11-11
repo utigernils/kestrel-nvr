@@ -1,0 +1,70 @@
+#!/usr/bin/env bash
+# Kestrel NVR - Helfer fuer den Host. Wird vom Installer nach /usr/local/bin/kestrel kopiert.
+set -euo pipefail
+NAME="kestrel-nvr"
+CONF="/etc/kestrel-nvr.conf"
+[ -f "$CONF" ] && . "$CONF"
+BASE="${BASE:-/opt/kestrel}"
+
+usage() {
+  cat <<USAGE
+Kestrel NVR
+
+  kestrel status              Zustand und Version
+  kestrel logs                Log mitlesen
+  kestrel restart|stop|start  Container steuern
+  kestrel update DATEI.zip    Auf die Version aus dem ZIP (oder Ordner) aktualisieren
+  kestrel rollback            Zur vorherigen Version zurueck
+  kestrel users               Benutzer auflisten
+  kestrel passwd NAME         Passwort eines Benutzers neu setzen
+  kestrel adduser NAME [admin|viewer]
+  kestrel uninstall           Container und Images entfernen (Aufnahmen bleiben)
+USAGE
+}
+need_root() { [ "$(id -u)" -eq 0 ] || { echo "Bitte mit sudo ausfuehren." >&2; exit 1; }; }
+
+case "${1:-}" in
+  status)
+    echo "Installiert: Version $(cat "$BASE/VERSION" 2>/dev/null || echo unbekannt) in $BASE"
+    docker ps -a --filter "name=^${NAME}$" --format 'Container:   {{.Status}}  (Ports {{.Ports}})'
+    ;;
+  logs)     exec docker logs -f --tail 100 "$NAME" ;;
+  restart|stop|start) docker "$1" "$NAME" >/dev/null && echo "ok" ;;
+  users)    exec docker exec "$NAME" python -m app.tool users ;;
+  passwd)   [ -n "${2:-}" ] || { usage; exit 1; }; exec docker exec -it "$NAME" python -m app.tool passwd "$2" ;;
+  adduser)  [ -n "${2:-}" ] || { usage; exit 1; }; exec docker exec -it "$NAME" python -m app.tool adduser "$2" ${3:+"$3"} ;;
+  update)
+    need_root
+    SRC="${2:-}"; [ -n "$SRC" ] || { echo "Aufruf: kestrel update /pfad/kestrel-nvr.zip" >&2; exit 1; }
+    TMP=""
+    if [ -f "$SRC" ]; then
+      TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
+      if command -v unzip >/dev/null 2>&1; then unzip -q "$SRC" -d "$TMP"; else python3 -m zipfile -e "$SRC" "$TMP"; fi
+      SRC="$(dirname "$(find "$TMP" -maxdepth 3 -name install.sh | head -n1)")"
+    fi
+    [ -f "$SRC/install.sh" ] || { echo "Kein install.sh in $SRC gefunden." >&2; exit 1; }
+    bash "$SRC/install.sh" --update --yes
+    ;;
+  rollback)
+    need_root
+    docker image inspect kestrel-nvr:previous >/dev/null 2>&1 || { echo "Kein vorheriges Image vorhanden." >&2; exit 1; }
+    . "$BASE/install.env"
+    docker tag kestrel-nvr:latest kestrel-nvr:rolledback
+    docker tag kestrel-nvr:previous kestrel-nvr:latest
+    docker rm -f "$NAME" >/dev/null 2>&1 || true
+    docker run -d --name "$NAME" --restart unless-stopped -p "$WEB_PORT:5000" -v "$BASE/config:/config" \
+      -v "$DATA:/data" -e "TZ=${TZ_NAME:-Europe/Zurich}" --log-opt max-size=10m --log-opt max-file=3 kestrel-nvr:latest >/dev/null
+    docker exec "$NAME" python -m app.tool version > "$BASE/VERSION" 2>/dev/null || true
+    echo "Zurueck auf Version $(cat "$BASE/VERSION")."
+    ;;
+  uninstall)
+    need_root
+    read -r -p "Container und Images entfernen? Aufnahmen und Konfiguration bleiben erhalten. [j/N]: " a
+    [[ $a =~ ^[JjYy] ]] || exit 0
+    docker rm -f "$NAME" >/dev/null 2>&1 || true
+    docker rmi kestrel-nvr:latest kestrel-nvr:previous >/dev/null 2>&1 || true
+    rm -f "$CONF" /usr/local/bin/kestrel
+    echo "Entfernt. Daten liegen weiter unter $BASE."
+    ;;
+  *) usage ;;
+esac

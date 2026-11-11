@@ -1,0 +1,1 @@
+import{t as e}from"./jsx-runtime-DyZJNswf.js";var t=e();function n({icon:e,title:n,children:r}){return(0,t.jsxs)(`div`,{className:`empty`,children:[e&&(0,t.jsx)(`div`,{className:`empty__icon`,children:e}),(0,t.jsx)(`h3`,{children:n}),r&&(0,t.jsx)(`div`,{className:`muted`,children:r})]})}export{n as t};

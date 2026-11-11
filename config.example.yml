@@ -1,0 +1,57 @@
+# Kestrel NVR - Beispielkonfiguration (liegt im Container unter /config/config.yml)
+cameras:
+  # MOBOTIX (M-JPEG ueber faststream, optimiert)
+  - name: eingang
+    type: mobotix
+    host: 192.168.1.50
+    port: 80
+    scheme: http            # http | https
+    username: admin
+    password: 'geheim'
+    sensor: auto            # auto | right | left | both   (auto = Tag/Nacht-Umschaltung der Kamera)
+    fps: 0                  # 0 = so schnell wie die Kamera liefert
+    extra_params: ''        # z.B. 'preview&previewsize=1280x960&quality=90'
+    detect: true
+
+  # Moderne Kamera mit H.264/H.265 ueber RTSP: wird ohne Neukodierung aufgezeichnet
+  # - name: garten
+  #   type: rtsp
+  #   url: rtsp://192.168.1.60:554/stream1
+  #   sub_url: rtsp://192.168.1.60:554/stream2   # optional: kleiner Nebenstrom fuer Live-Bild und Erkennung
+  #   live_fps: 5
+  #   username: admin
+  #   password: 'geheim'
+
+  # Andere Kamera mit M-JPEG ueber HTTP
+  # - name: werkstatt
+  #   type: mjpeg
+  #   url: http://192.168.1.70/video.mjpg
+
+storage:
+  path: /data
+  retention_days: 7         # 0 = nie nach Alter loeschen
+  max_gb: 0                 # 0 = keine Groessengrenze
+  min_free_gb: 2            # darunter werden die aeltesten Stunden geloescht
+
+detect:
+  enabled: true
+  model: /models/yolox_tiny.onnx   # YOLOX- oder YOLOv8/11-ONNX (COCO-Klassen)
+  fps: 2                    # Analysen pro Sekunde und Kamera
+  threads: 2                # CPU-Threads fuer das Netz
+  score: 0.45
+  labels: [person, bicycle, car, motorcycle, bus, truck, cat, dog, bird]
+  motion_gate: true         # ohne Bewegung laeuft das Netz nicht
+  stationary_s: 60          # so lange unbewegt -> Ereignis endet (parkendes Auto)
+
+transcode:
+  enabled: true            # abgeschlossene Stunden im Hintergrund nach H.265 umkodieren
+  crf: 26                  # Qualitaet: 22 = hoch, 26 = ausgewogen, 30 = sparsam
+  preset: veryfast         # x265-Preset
+  threads: 0               # 0 = automatisch (halbe Kernzahl)
+  delay_minutes: 2         # Wartezeit nach Stundenende
+  cache_gb: 2              # Platz fuer zum Ansehen dekodierte Minuten
+  cache_minutes: 30        # danach wird Dekodiertes wieder geloescht
+
+ui:                       # nur fuer den ersten Start: daraus entsteht das Admin-Konto
+  username: 'admin'
+  password: 'mindestens8zeichen'   # wird nach dem ersten Start von Kestrel geleert

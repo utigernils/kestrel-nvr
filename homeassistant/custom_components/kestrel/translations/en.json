@@ -1,0 +1,102 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Connect Kestrel NVR",
+        "description": "Enter the address of your Kestrel recorder. An administrator then has to approve the request in Kestrel.",
+        "data": {
+          "host": "IP address or hostname",
+          "port": "Port",
+          "ssl": "Use HTTPS",
+          "verify_ssl": "Verify certificate"
+        }
+      },
+      "link": {
+        "title": "Approve in Kestrel",
+        "description": "Open {url}, sign in as an administrator and approve the request from Home Assistant.\n\nMake sure it shows this code: **{code}**\n\nThen press Submit here."
+      },
+      "reauth_confirm": {
+        "title": "Reconnect Kestrel",
+        "description": "Access was revoked in Kestrel or is no longer valid. Submit to start a new request."
+      }
+    },
+    "error": {
+      "cannot_connect": "Kestrel cannot be reached at this address.",
+      "not_approved": "Not approved yet. Approve the request in Kestrel and submit again.",
+      "expired": "The request had expired. A new one with a new code was created.",
+      "rate_limited": "Too many requests. Please wait a little.",
+      "unknown": "Unexpected response from Kestrel."
+    },
+    "abort": {
+      "already_configured": "This recorder is already configured.",
+      "denied": "The request was denied in Kestrel.",
+      "reauth_successful": "Reconnected."
+    }
+  },
+  "entity": {
+    "binary_sensor": {
+      "online": {
+        "name": "Connection"
+      },
+      "person": {
+        "name": "Person"
+      },
+      "vehicle": {
+        "name": "Vehicle"
+      },
+      "animal": {
+        "name": "Animal"
+      },
+      "object": {
+        "name": "Object detected"
+      },
+      "storage_problem": {
+        "name": "Storage problem"
+      }
+    },
+    "sensor": {
+      "fps": {
+        "name": "Frame rate"
+      },
+      "last_event": {
+        "name": "Last event"
+      },
+      "last_event_time": {
+        "name": "Last event time"
+      },
+      "storage_used": {
+        "name": "Recordings size"
+      },
+      "disk_free": {
+        "name": "Free disk space"
+      },
+      "capacity_days": {
+        "name": "Storage lasts for"
+      },
+      "cpu_percent": {
+        "name": "CPU"
+      },
+      "version": {
+        "name": "Version"
+      }
+    },
+    "image": {
+      "last_event": {
+        "name": "Last event"
+      }
+    },
+    "event": {
+      "detection": {
+        "name": "Detection",
+        "state_attributes": {
+          "event_type": {
+            "state": {
+              "detected": "Detected",
+              "ended": "Ended"
+            }
+          }
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,12 @@
+**/__pycache__
+*.pyc
+.git
+README.md
+install.sh
+docker-compose.yml
+homeassistant
+kestrel
+web/node_modules
+docs
+README.de.md
+.gitignore

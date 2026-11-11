@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Web UI
+web/node_modules/
+web/dist/
+# The built UI in app/web is committed on purpose: the Docker build can use it
+# when the npm registry is not reachable (WEB_MODE=pre).
+
+# Local data and configuration - never commit these
+/config/
+/data/
+config.yml
+*.db
+*.db-wal
+*.db-shm
+install.env
+
+# Detection models downloaded at runtime
+/models/*.onnx
+!/models/yolox_tiny.onnx
+
+# Packaging and editors
+*.zip
+.DS_Store
+.idea/
+.vscode/
