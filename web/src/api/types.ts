@@ -188,7 +188,7 @@ export interface MinuteIndex {
   minute: number;
   ts: number[];
   len: number[];
-  codec: 'jpeg' | 'video' | 'zip' | 'none';
+  codec: 'jpeg' | 'video' | 'none';
 }
 
 /** [ts, label, score, x1, y1, x2, y2, trackId] */

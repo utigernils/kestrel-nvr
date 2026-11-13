@@ -1,4 +1,4 @@
-"""Objekterkennung auf der CPU (ONNX Runtime, YOLOX oder YOLOv8-Format).
+"""Objekterkennung auf der CPU (ONNX Runtime; YOLOX, YOLOv8/11 und End-to-End-Modelle wie YOLO26).
 
 CPU-schonend durch drei Massnahmen:
   1. Es wird nur ein Bruchteil der Bilder analysiert (detect.fps, Standard 2/s).
@@ -92,15 +92,29 @@ class Model:
         self.h = shape[2] if isinstance(shape[2], int) else 640
         self.w = shape[3] if isinstance(shape[3], int) else 640
         out = self.sess.get_outputs()[0].shape
-        # YOLOX: [1, N, 85]   YOLOv8/11: [1, 84, N]
-        self.kind = "yolox"
-        if len(out) == 3 and isinstance(out[1], int) and isinstance(out[2], int) and out[1] < out[2]:
-            self.kind = "yolov8"
-        elif len(out) == 3 and isinstance(out[1], int) and not isinstance(out[2], int) and out[1] < 200:
-            self.kind = "yolov8"
+        self.kind = self._detect_kind(out)
         self._grid = None
         self.last_ms = 0.0
         log.info("Modell %s geladen (%s, %dx%d, %d Threads)", path, self.kind, self.w, self.h, threads)
+
+    @staticmethod
+    def _detect_kind(out) -> str:
+        """Ausgabeformat am Tensor erkennen.
+
+        yolox   [1, N, 85]   Zellen x (Box, Objekt, 80 Klassen), braucht Gitter + NMS
+        yolov8  [1, 84, N]   (Box, 80 Klassen) x Zellen, braucht NMS (YOLOv8, YOLO11, YOLO26 mit NMS)
+        e2e     [1, N, 6]    fertige Treffer x1,y1,x2,y2,Sicherheit,Klasse - ohne NMS (YOLO26, YOLOv10)
+        """
+        if len(out) != 3:
+            raise ValueError("unbekanntes Ausgabeformat %s" % (out,))
+        a, b = out[1], out[2]
+        if b == 6:
+            return "e2e"
+        if isinstance(a, int) and a < 200 and (not isinstance(b, int) or a < b):
+            return "yolov8"
+        if isinstance(b, int) and b >= 6:
+            return "yolox"
+        raise ValueError("unbekanntes Ausgabeformat %s" % (out,))
 
     def _yolox_grid(self):
         if self._grid is None:
@@ -127,6 +141,10 @@ class Model:
         else:
             blob = canvas[:, :, ::-1].transpose(2, 0, 1)[None].astype(np.float32) / 255.0
         out = self.sess.run(None, {self.input_name: np.ascontiguousarray(blob)})[0][0]
+        if self.kind == "e2e":
+            res = self._from_e2e(out, score_thr, r, iw, ih)
+            self.last_ms = (time.perf_counter() - t0) * 1000
+            return res
         if self.kind == "yolox":
             grid, stride = self._yolox_grid()
             xy = (out[:, :2] + grid) * stride
@@ -152,6 +170,19 @@ class Model:
                         label = COCO[c] if c < len(COCO) else str(int(c))
                         res.append((label, float(sc[sel[k]]), float(x1), float(y1), float(x2), float(y2)))
         self.last_ms = (time.perf_counter() - t0) * 1000
+        return res
+
+
+    @staticmethod
+    def _from_e2e(out: np.ndarray, score_thr: float, r: float, iw: int, ih: int) -> List[tuple]:
+        """End-to-End-Ausgabe: die Treffer sind fertig, es bleibt nur das Umrechnen auf 0..1."""
+        res = []
+        for x1, y1, x2, y2, sc, c in out[out[:, 4] >= score_thr]:
+            x1, y1 = max(0.0, x1 / r / iw), max(0.0, y1 / r / ih)
+            x2, y2 = min(1.0, x2 / r / iw), min(1.0, y2 / r / ih)
+            if x2 - x1 > 0.005 and y2 - y1 > 0.005:
+                c = int(c)
+                res.append((COCO[c] if 0 <= c < len(COCO) else str(c), float(sc), float(x1), float(y1), float(x2), float(y2)))
         return res
 
 

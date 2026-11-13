@@ -36,7 +36,8 @@ WORKDIR /opt/kestrel
 COPY requirements.txt .
 RUN pip install -r requirements.txt
 
-# Erkennungsmodell (YOLOX-Tiny, Apache-2.0). Liegt es nicht im Paket, wird es geladen.
+# Erkennungsmodelle: YOLOX-Tiny (Apache-2.0; liegt es nicht im Paket, wird es geladen) und, falls
+# im Paket vorhanden, YOLO26n/s (AGPL-3.0, siehe models/README.md).
 ARG MODEL_URL=https://github.com/Megvii-BaseDetection/YOLOX/releases/download/0.1.1rc0/yolox_tiny.onnx
 COPY models/ /models/
 RUN test -s /models/yolox_tiny.onnx || python -c "import urllib.request,sys; urllib.request.urlretrieve(sys.argv[1], '/models/yolox_tiny.onnx')" "$MODEL_URL"

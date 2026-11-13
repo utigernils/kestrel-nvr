@@ -1,8 +1,11 @@
 """Erkennungsmodelle: Katalog, Download, eigene Modelle.
 
-Unterstuetzt werden ONNX-Modelle im YOLOX-Format ([1, N, 85]) und im YOLOv8/YOLO11-Format
-([1, 84, N]) mit den 80 COCO-Klassen. Die Katalog-Modelle stammen aus dem YOLOX-Projekt
-(Megvii, Apache-2.0); die Adressen zeigen auf dessen Release 0.1.1rc0 bei GitHub.
+Unterstuetzt werden ONNX-Modelle mit den 80 COCO-Klassen in drei Ausgabeformaten:
+YOLOX ([1, N, 85]), YOLOv8/YOLO11 ([1, 84, N]) und End-to-End ([1, N, 6], z. B. YOLO26).
+
+Die YOLOX-Modelle stammen aus dem YOLOX-Projekt (Megvii, Apache-2.0) und werden von dessen
+Release 0.1.1rc0 bei GitHub geladen. Die YOLO26-Modelle (Ultralytics, AGPL-3.0) liegen dem Paket
+bei - Ultralytics bietet keine fertigen ONNX-Dateien zum Herunterladen an (siehe models/README.md).
 """
 from __future__ import annotations
 
@@ -23,6 +26,11 @@ CATALOG = [
      "bytes": 20219662, "input": 416, "map": 32.8, "speed": "fast", "license": "Apache-2.0"},
     {"id": "yolox_s", "name": "YOLOX-S", "file": "yolox_s.onnx", "url": _BASE + "yolox_s.onnx",
      "bytes": 35858002, "input": 640, "map": 40.5, "speed": "slow", "license": "Apache-2.0"},
+    # mitgeliefert (keine Download-Adresse); mAP = End-to-End-Wert laut Ultralytics
+    {"id": "yolo26n", "name": "YOLO26n", "file": "yolo26n.onnx", "url": None,
+     "bytes": 9942036, "input": 640, "map": 40.1, "speed": "fast", "license": "AGPL-3.0"},
+    {"id": "yolo26s", "name": "YOLO26s", "file": "yolo26s.onnx", "url": None,
+     "bytes": 38291209, "input": 640, "map": 47.8, "speed": "slow", "license": "AGPL-3.0"},
 ]
 NAME_RE = re.compile(r"[A-Za-z0-9._-]{1,80}\.onnx")
 MAX_UPLOAD = 400 * 1024 * 1024
@@ -51,7 +59,9 @@ class ModelStore:
         for c in CATALOG:
             p = self.path_of(c["file"])
             seen.add(c["file"])
-            out.append({**c, "custom": False, "installed": bool(p), "path": p,
+            if not p and not c["url"]:
+                continue                        # mitgeliefertes Modell fehlt in diesem Paket
+            out.append({**{k: v for k, v in c.items() if k != "url"}, "custom": False, "installed": bool(p), "path": p,
                         "deletable": bool(p) and p.startswith(self.user_dir),
                         "active": bool(p) and os.path.realpath(p) == active})
         for d in (self.user_dir, BUNDLED_DIR):
@@ -76,7 +86,7 @@ class ModelStore:
     # ---------------------------------------------------------------- Download
     def start_download(self, model_id: str, validate) -> None:
         entry = next((c for c in CATALOG if c["id"] == model_id), None)
-        if not entry:
+        if not entry or not entry["url"]:
             raise KeyError(model_id)
         with self.lock:
             if self.download["id"] and not self.download["done"]:

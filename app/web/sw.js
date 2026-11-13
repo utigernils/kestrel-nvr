@@ -3,9 +3,9 @@
  * Puffert ausschliesslich die App-Huelle (index.html und die gebauten Dateien unter /assets/),
  * damit die installierte App sofort startet. Alles unter /api/ - Daten, Bilder, Live-Stroeme,
  * Video - wird NIE angefasst und geht immer direkt ans Netz.
- * 1.4.0 wird beim Bauen ersetzt; eine neue Version raeumt den alten Puffer weg.
+ * 1.4.5 wird beim Bauen ersetzt; eine neue Version raeumt den alten Puffer weg.
  */
-const CACHE = 'kestrel-shell-1.4.0';
+const CACHE = 'kestrel-shell-1.4.5';
 // Basis-Pfad (normalerweise '/', hinter einem Reverse-Proxy evtl. ein Unterpfad)
 const BASE = new URL(self.registration.scope).pathname;
 const SHELL = BASE;

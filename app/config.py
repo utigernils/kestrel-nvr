@@ -158,11 +158,6 @@ def load(path: str = CONFIG_PATH) -> Config:
     cfg.storage = _pick(StorageCfg, raw.get("storage"))
     cfg.detect = _pick(DetectCfg, raw.get("detect"))
     cfg.transcode = _pick(TranscodeCfg, raw.get("transcode"))
-    old = raw.get("archive") or {}                 # Einstellungen aus 1.1 uebernehmen
-    if "transcode" not in raw and old:
-        for k in ("cache_gb", "cache_minutes"):
-            if k in old:
-                setattr(cfg.transcode, k, old[k])
     cfg.transcode.crf = int(min(40, max(16, cfg.transcode.crf)))
     cfg.ui = _pick(UiCfg, raw.get("ui"))
     cfg.storage.path = os.environ.get("KESTREL_DATA", cfg.storage.path)

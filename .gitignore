@@ -22,6 +22,9 @@ install.env
 # Detection models downloaded at runtime
 /models/*.onnx
 !/models/yolox_tiny.onnx
+# Bundled YOLO26 models (AGPL-3.0, see models/README.md) - remove these two lines to keep them out of the repo
+!/models/yolo26n.onnx
+!/models/yolo26s.onnx
 
 # Packaging and editors
 *.zip

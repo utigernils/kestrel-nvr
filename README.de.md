@@ -79,8 +79,10 @@ http://<ip>/control/faststream.jpg?stream=full&needlength&fps=0
 
 **RTSP (H.264/H.265):**
 
-* ffmpeg liest den Strom und schneidet ihn ohne Neukodierung in Minuten-Dateien. Das kostet kaum
-  Rechenleistung, und die Qualität ist exakt die der Kamera.
+* Ein ffmpeg-Prozess kopiert den Strom ohne Neukodierung in Minuten-Dateien. Er dekodiert nichts,
+  das kostet kaum Rechenleistung, und die Qualität ist exakt die der Kamera.
+* Ein zweiter Prozess dekodiert das Live-Bild – nur solange die Erkennung für die Kamera an ist
+  oder jemand zusieht. Sonst wird gar nichts dekodiert.
 * Jedes Bild bekommt seine Empfangszeit als Zeitstempel; Player, Boxen und Einzelbildschritt
   funktionieren wie bei MOBOTIX. Zum Ansehen wird die benötigte Minute dekodiert.
 * Für Live-Bild und Erkennung erzeugt Kestrel einige JPEGs pro Sekunde (`live_fps`, Standard 5).
@@ -104,8 +106,10 @@ Stunde Material war in rund 12 Minuten fertig.
 * Die Zeitstempel bleiben im Index. Das n-te Bild im Video gehört zum n-ten Zeitstempel – die
   Wiedergabe behält die ursprüngliche, ungleichmäßige Bildrate, Boxen und Einzelbildschritt
   funktionieren wie zuvor.
-* Zum Ansehen dekodiert Kestrel die benötigte Minute nach `/data/cache` (etwa eine Sekunde) und
-  löscht sie nach 30 Minuten wieder.
+* Zum Ansehen dekodiert Kestrel die benötigte Minute nach `/data/cache`. Die Bilder sind schon
+  während des Dekodierens nutzbar, die nächste Minute wird im Voraus vorbereitet. Nach 30 Minuten
+  wird sie wieder gelöscht.
+* Der volle Wertebereich der JPEGs bleibt erhalten (kein Umrechnen in den Video-Bereich und zurück).
 * **H.265 ist verlustbehaftet.** Nach dem Umkodieren gibt es die Original-JPEGs der Stunde nicht
   mehr. Qualität einstellbar: Hoch (CRF 22), Ausgewogen (26), Sparsam (30). Abschaltbar unter
   *Einstellungen → Speicher*.
@@ -128,8 +132,6 @@ Derselbe Wert geht an Home Assistant.
 
 Warnungen erscheinen oben in der Oberfläche, wenn der Platz nicht für die eingestellte Aufbewahrung
 reicht oder die Umkodierung mehr als sechs Stunden im Rückstand ist.
-
-**Update von 1.1:** zip-Archive bleiben lesbar und werden nach und nach entpackt und umkodiert.
 
 ## Anmeldung und Sicherheit
 
@@ -154,8 +156,11 @@ reicht oder die Umkodierung mehr als sechs Stunden im Rückstand ist.
 * Ohne Bildänderung läuft das Netz gar nicht (Bewegungs-Gate).
 * Die Boxen sind normiert gespeichert und werden im Player über das Bild gelegt; zwischen zwei
   Analysen wird interpoliert.
-* Eigenes Modell: eine YOLOX- oder YOLOv8/11-ONNX-Datei mit den 80 COCO-Klassen unter
-  *Einstellungen → Erkennung* hochladen.
+* YOLO26n und YOLO26s (Ultralytics, **AGPL-3.0**) liegen dem Paket bei: YOLO26n ist etwa so schnell
+  wie YOLOX-Tiny und deutlich genauer, YOLO26s am genauesten und rund dreimal langsamer. Was die
+  Lizenz bei einer Weitergabe bedeutet, steht in `models/README.md`.
+* Eigenes Modell: eine ONNX-Datei mit den 80 COCO-Klassen unter *Einstellungen → Erkennung*
+  hochladen. Unterstützt: YOLOX `[1, N, 85]`, YOLOv8/YOLO11 `[1, 84, N]`, End-to-End `[1, N, 6]`.
 
 ## Speicherformat
 
@@ -251,16 +256,14 @@ kein MQTT.
 
 ## Lizenz
 
-**Kestrel NVR** steht unter der **MIT-Lizenz mit Commons Clause** – der vollständige Lizenztext befindet sich in der Datei [LICENSE](LICENSE).
+**Für dieses Projekt wurde noch keine Lizenz gewählt.** Solange keine `LICENSE`-Datei beiliegt,
+sind keine Nutzungs-, Änderungs- oder Verbreitungsrechte eingeräumt.
 
-- **Frei nutzbar, veränderbar und selbst hostbar:** Privatpersonen, Organisationen und Unternehmen dürfen Kestrel NVR kostenlos nutzen, forken und anpassen (auch für den internen geschäftlichen Einsatz).
-- **Kein Verkauf oder bezahltes Hosting:** Es ist nicht gestattet, die Software zu verkaufen, gegen Gebühr zu lizenzieren oder als kostenpflichtigen Hosting-/Cloud-Dienst anzubieten.
-- **Namensnennung erforderlich:** Alle Forks, Kopien und abgeleiteten Versionen müssen den ursprünglichen Urheberrechtshinweis sowie den Lizenztext beibehalten.
+Fremde Bestandteile:
 
-Drittanbieter-Komponenten:
 
-- Erkennungsmodelle (`models/yolox_tiny.onnx` und die zum Download angebotenen Modelle) stammen aus dem
-  YOLOX-Projekt von Megvii, Apache-2.0.
-- Die Komponenten in `web/src/components/reactbits/` stammen von React Bits, MIT + Commons Clause; der
-  Lizenztext liegt in diesem Ordner.
-- Laufzeitabhängigkeiten sind in `requirements.txt` und `web/package.json` mit ihren jeweiligen Lizenzen aufgeführt.
+Das Erkennungsmodell `models/yolox_tiny.onnx` stammt aus dem Projekt YOLOX (Megvii, Apache-2.0).
+`models/yolo26n.onnx` und `models/yolo26s.onnx` stammen von Ultralytics (**AGPL-3.0**); wer kein
+AGPL-Material weitergeben will, löscht diese beiden Dateien (siehe `models/README.md`).
+Die Komponenten unter `web/src/components/reactbits/` stammen von React Bits (MIT + Commons Clause,
+Lizenztext liegt im selben Ordner).

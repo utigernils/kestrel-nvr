@@ -316,10 +316,6 @@ say
 if [ "$MODE" = "update" ]; then
   ok "${c_b}Aktualisiert auf Version $NEW_VER.${c_0}"
   say "  Falls nötig zurück zur alten Version:  sudo kestrel rollback"
-  case "$OLD_VER" in 1.0.*|1.1.*)
-    say "  Neu in 1.2: Abgeschlossene Stunden werden nach H.265 umkodiert (abschaltbar unter Einstellungen → Speicher)."
-    say "  Vorhandene Aufnahmen und zip-Archive werden dabei nach und nach umgewandelt." ;;
-  esac
   if [ "$OLD_VER" = "1.0.0" ]; then
     warn "Neu in dieser Version: Anmeldung. Beim ersten Öffnen der Oberfläche legst du das Administrator-Konto an – bitte gleich erledigen."
   fi

@@ -103,10 +103,14 @@ http://<ip>/control/faststream.jpg?stream=full&needlength&fps=0
 
 **RTSP (H.264/H.265)**
 
-- ffmpeg reads the stream and cuts it into one-minute files without re-encoding.
+- One ffmpeg process copies the stream into one-minute files without re-encoding. It decodes
+  nothing and needs almost no CPU.
+- A second process decodes the live picture – only while detection is on for the camera or someone
+  is watching. With detection off and nobody watching, nothing is decoded.
 - Every frame gets its arrival time as timestamp; player, boxes and frame stepping work as with MOBOTIX.
-- For live view and detection Kestrel produces a few JPEGs per second (`live_fps`, default 5). With
-  a low-resolution **sub stream** (`sub_url`) the main stream does not have to be decoded for that.
+- For live view and detection Kestrel produces a few JPEGs per second (`live_fps`, default 5, at
+  most 1920 px wide). With a low-resolution **sub stream** (`sub_url`) the main stream does not have
+  to be decoded for that – this saves the most CPU, especially with 4K cameras.
 - Anything ffmpeg can read is accepted (`rtsp://`, `rtsps://`, `http://`, `rtmp://`).
 - Not included: ONVIF discovery, audio, pan/tilt.
 
@@ -135,11 +139,16 @@ The settings are stored in `/config/config.yml` inside the container (see
 |---|---|---|---|
 | YOLOX-Nano | 416 px | 25.8 | fastest |
 | YOLOX-Tiny | 416 px | 32.8 | default, bundled in the image |
-| YOLOX-S | 640 px | 40.5 | most accurate, clearly slower |
+| YOLOX-S | 640 px | 40.5 | clearly slower |
+| YOLO26n | 640 px | 40.1 | bundled; about as fast as YOLOX-Tiny, much more accurate |
+| YOLO26s | 640 px | 47.8 | bundled; most accurate, about three times slower than YOLO26n |
 
-The files come from the release page of the YOLOX project (Megvii, Apache-2.0). The download is
-checked (size, and the file must load) before it can be used. You can also upload your own ONNX
-model in YOLOX or YOLOv8/YOLO11 format with the 80 COCO classes. Switching takes effect
+The YOLOX files come from the release page of the YOLOX project (Megvii, Apache-2.0). The download
+is checked (size, and the file must load) before it can be used. The YOLO26 files (Ultralytics,
+**AGPL-3.0**) ship with the package because Ultralytics offers no ready-made ONNX downloads; see
+[models/README.md](models/README.md) for how they were exported and what the license means if you
+redistribute them. You can also upload your own ONNX model with the 80 COCO classes in one of three
+output formats: YOLOX `[1, N, 85]`, YOLOv8/YOLO11 `[1, 84, N]` or end-to-end `[1, N, 6]` (YOLO26). Switching takes effect
 immediately; the inference time of the active model is shown.
 
 ### H.265 and storage
@@ -151,7 +160,9 @@ and detection keep priority.
 - Every minute is verified: if the frame count of the video does not match the index exactly, the
   minute stays JPEG. The same applies to minutes in which the camera changes resolution.
 - The timestamps stay in the index; frame *n* of the video belongs to timestamp *n*.
-- For viewing, the required minute is decoded to `/data/cache` and removed again after 30 minutes.
+- For viewing, the required minute is decoded to `/data/cache` (pictures are usable while the
+  decoding is still running, the next minute is prepared in advance) and removed after 30 minutes.
+- The full value range of the JPEGs is kept (no conversion to video range and back).
 - **H.265 is lossy.** After transcoding, the original JPEGs of that hour are gone. Quality: High
   (CRF 22), Balanced (26), Economy (30). Can be switched off.
 - “Storage lasts for” counts fresh hours at the full camera rate and everything older with the
@@ -271,16 +282,16 @@ No audio, no MxPEG, no video export (single frames can be downloaded), no zones/
 
 ## License
 
-**Kestrel NVR** is licensed under the **MIT License with the Commons Clause** – see the [LICENSE](LICENSE) file for the full text.
-
-- **Free to use, modify, and self-host:** Individuals, organizations, and companies may freely run, fork, and modify Kestrel NVR (including for internal commercial/business security).
-- **No selling or paid hosting:** You may not sell the software, relicense it for a fee, or offer it as a paid/managed hosting service.
-- **Attribution required:** All forks, copies, and modified versions must retain the original copyright notice and license text pointing back to this source.
+**No license has been chosen for this project yet.** Until the author adds a `LICENSE` file, no
+rights to use, modify or distribute the code are granted. (Author: pick a license before
+publishing – note the Commons Clause of the bundled React Bits components below when choosing.)
 
 Third-party parts:
 
-- Detection models (`models/yolox_tiny.onnx` and the models offered for download) are from the
-  YOLOX project by Megvii, Apache-2.0.
+- The YOLOX detection models (`models/yolox_tiny.onnx` and the ones offered for download) are from
+  the YOLOX project by Megvii, Apache-2.0.
+- `models/yolo26n.onnx` and `models/yolo26s.onnx` are from Ultralytics, **AGPL-3.0**. Delete these
+  two files if you do not want AGPL material in your distribution; see `models/README.md`.
 - The components in `web/src/components/reactbits/` are from React Bits, MIT + Commons Clause; the
   license text is in that folder.
 - Runtime dependencies are listed in `requirements.txt` and `web/package.json` with their own licenses.

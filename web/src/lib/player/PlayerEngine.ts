@@ -9,7 +9,12 @@ import { MIN } from '../format';
  * Es gibt keinen Videostrom: Der Server liefert pro Minute eine Liste von Zeitstempeln und auf
  * Anfrage einzelne Bilder. Die Engine laesst eine "Medienuhr" laufen und zeigt jeweils das letzte
  * Bild, dessen Zeitstempel erreicht ist - so entstehen exakt die Abstaende der Aufnahme. Bilder
- * werden vorausgeladen und auf Anzeigegroesse dekodiert. Bewusst ohne React gebaut: der
+ * werden vorausgeladen und auf Anzeigegroesse dekodiert.
+ *
+ * Schnelle Wiedergabe (ueber 2x): Es werden nicht mehr alle Bilder geladen, sondern so viele, wie
+ * Netz und Dekoder schaffen - der Abstand richtet sich nach der gemessenen Ladezeit. Geladen wird
+ * mit Vorlauf (die Uhr ist beim Eintreffen schon weiter). Kommt trotzdem laenger als eine Sekunde
+ * kein neues Bild, wartet die Uhr, statt blind weiterzulaufen. Bewusst ohne React gebaut: der
  * Bildwechsel laeuft in requestAnimationFrame, React bekommt nur wenige Male pro Sekunde einen
  * Schnappschuss fuer die Bedienelemente.
  */
@@ -47,6 +52,8 @@ export interface PlayerSnapshot {
   span: number;
 }
 
+const MAX_INFLIGHT = 6;
+
 const upperBound = (a: number[], v: number): number => {
   let lo = 0;
   let hi = a.length;
@@ -81,6 +88,11 @@ export class PlayerEngine {
   private useImg = typeof createImageBitmap !== 'function';
   private shown: FrameRef | null = null;
   private stalled = false;
+  /** Schnelle Wiedergabe kommt nicht hinterher: die Uhr wartet auf das naechste Bild. */
+  private lagging = false;
+  /** Geglaettete Zeit von der Anfrage bis zum dekodierten Bild (ms). */
+  private latency = 150;
+  private lastShownAt = 0;
   private dead = false;
   private raf = 0;
   private lastNow = performance.now();
@@ -144,12 +156,15 @@ export class PlayerEngine {
   toggle(): void {
     this.playing = !this.playing;
     this.stalled = false;
+    this.lagging = false;
     if (this.playing && this.shownTs && Math.abs(this.t - this.shownTs) < 3000) this.t = this.shownTs;
     this.notify(true);
   }
   seek(t: number, center = false): void {
     this.t = Math.min(t, Date.now());
     this.stalled = false;
+    this.lagging = false;
+    this.lastShownAt = performance.now();
     if (center || this.t < this.v0 || this.t > this.v0 + this.span) this.v0 = this.t - this.span / 2;
     this.notify(true);
   }
@@ -160,7 +175,7 @@ export class PlayerEngine {
     else { const n = this.nextAfter(base); if (n) this.t = n; }
     this.notify(true);
   }
-  setSpeed(s: number): void { this.speed = s; this.notify(true); }
+  setSpeed(s: number): void { this.speed = s; this.lagging = false; this.lastShownAt = performance.now(); this.notify(true); }
   setShowBoxes(v: boolean): void { this.showBoxes = v; this.redraw(); this.notify(true); }
   setSpan(span: number): void { this.span = span; this.v0 = this.t - span / 2; this.notify(true); }
   zoomAt(center: number, factor: number): void {
@@ -263,10 +278,14 @@ export class PlayerEngine {
     const f: FrameEntry = { bmp: null, ctrl: new AbortController() };
     this.frames.set(ts, f);
     this.inflight++;
+    const t0 = performance.now();
     fetch(api.cameras.frameUrl(this.cam, ts), { signal: f.ctrl.signal, credentials: 'same-origin' })
       .then(r => { if (!r.ok) throw new Error('http'); return r.blob(); })
       .then(blob => this.decode(blob))
-      .then(bmp => { if (this.frames.get(ts) === f) f.bmp = bmp; else closePicture(bmp); })
+      .then(bmp => {
+        this.latency = Math.min(5000, this.latency * 0.7 + (performance.now() - t0) * 0.3);
+        if (this.frames.get(ts) === f) f.bmp = bmp; else closePicture(bmp);
+      })
       .catch(() => { if (this.frames.get(ts) === f) f.failed = true; })
       .finally(() => { this.inflight--; });
   }
@@ -323,24 +342,38 @@ export class PlayerEngine {
   }
 
   private prefetch(cur: FrameRef | null): void {
+    const fast = this.playing && this.speed > 2;
     const horizon = 1500 * Math.max(1, this.speed);
-    const minGap = this.speed > 2 ? this.speed * 33 : 0;
+    // Schnell: hoechstens so viele Bilder pro Sekunde anfordern, wie nachweislich ankommen
+    // (6 Verbindungen, gemessene Ladezeit), und nie mehr als 15 - der Rest waere verschwendet.
+    const rate = Math.max(1, Math.min(15, (0.8 * MAX_INFLIGHT * 1000) / this.latency));
+    const minGap = fast ? Math.max(this.speed * 33, (this.speed * 1000) / rate) : 0;
+    // Vorlauf: Bilder, die beim Eintreffen schon ueberholt waeren, gar nicht erst laden.
+    const lead = fast && !this.lagging ? this.speed * this.latency * 1.2 : 0;
     const want: number[] = [];
     let ts: number | null = cur ? cur.ts : null;
-    let last = -1e18;
+    // Schnell: festes Raster (erstes Bild je Abschnitt von minGap) - so waehlt jeder Durchlauf
+    // dieselben Bilder und nicht bei jedem Tick ein neues.
+    let lastSlot = -1;
     let guard = 0;
-    if (cur) want.push(cur.ts);
-    while (this.playing && ts != null && want.length < 24 && guard++ < 400) {
+    if (cur && (!fast || this.lagging || !this.shownTs)) want.push(cur.ts);
+    while (this.playing && ts != null && want.length < 24 && guard++ < 3000) {
       const n = this.nextAfter(ts);
-      if (!n || n > this.t + horizon) break;
-      if (n - last >= minGap) { want.push(n); last = n; }
+      if (!n || n > this.t + lead + horizon) break;
+      const slot = minGap ? Math.floor(n / minGap) : -2;
+      if ((!minGap || slot !== lastSlot) && n >= this.t + lead) want.push(n);
+      lastSlot = slot;
       ts = n;
     }
-    for (const w of want) { if (this.inflight >= 6) break; this.request(w); }
+    for (const w of want) { if (this.inflight >= MAX_INFLIGHT) break; this.request(w); }
     const keep = new Set(want);
+    // Schnell: auch ueberholte Bilder behalten, bis ein neueres gezeigt wurde - sie sind immer
+    // noch aktueller als das, was gerade zu sehen ist. Laufende Anfragen nicht abbrechen.
+    const back = fast ? Math.max(400, this.speed * (this.latency * 2 + 600)) : 400;
     for (const [k, f] of this.frames) {
       if (keep.has(k) || (f.bmp && f.bmp === this.shownBmp)) continue;
-      if (k < this.t - 400 || k > this.t + horizon * 2 || f.failed) {
+      const stale = fast ? k < this.shownTs || k < this.t - back : k < this.t - back;
+      if (stale || k > this.t + lead + horizon * 2 || f.failed) {
         if (!f.bmp) f.ctrl.abort();
         closePicture(f.bmp);
         this.frames.delete(k);
@@ -404,6 +437,7 @@ export class PlayerEngine {
   private show(bmp: Picture, cur: FrameRef): void {
     const prev = this.shownTs;
     this.shownBmp = bmp;
+    this.lastShownAt = performance.now();
     this.shownTs = cur.ts;
     this.shown = cur;
     this.redraw();
@@ -432,7 +466,7 @@ export class PlayerEngine {
     if (this.dead) return;
     const dt = Math.min(250, now - this.lastNow);
     this.lastNow = now;
-    if (this.playing && !this.stalled) this.t += dt * this.speed;
+    if (this.playing && !this.stalled && !this.lagging) this.t += dt * this.speed;
     if (this.t > Date.now()) this.t = Date.now();
     let msg = '';
     let cur = this.frameAt(this.t);
@@ -475,6 +509,10 @@ export class PlayerEngine {
         }
       }
     }
+    // Schnelle Wiedergabe: laenger als eine Sekunde kein neues Bild, obwohl eines faellig ist ->
+    // die Uhr anhalten, bis das Laden aufgeholt hat (sonst liefe sie den Bildern davon).
+    this.lagging = this.playing && this.speed > 2 && !!cur && cur.ts !== this.shownTs
+      && now - this.lastShownAt > 1000 && Math.abs(this.t - this.shownTs) > this.speed * 500;
     if (cur !== undefined) this.prefetch(cur);
     if (this.showBoxes && this.shownTs && !this.playing && now - this.lastRedraw > 500) {
       this.lastRedraw = now;                 // Boxen koennen nach dem Bild eintreffen

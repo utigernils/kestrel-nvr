@@ -1,5 +1,25 @@
 # Changelog
 
+## 1.4.5 – 2026-11-13
+
+### New
+- Detection: models with end-to-end output (`[1, 300, 6]`, e.g. YOLO26) are supported. YOLO26n and YOLO26s ship with the package and can be selected under Settings → Detection (license: AGPL-3.0, see `models/README.md`).
+- RTSP cameras: the live picture is only decoded while it is needed – when detection is on for the camera or someone is watching. Otherwise nothing is decoded at all.
+
+### Fixed
+- Fast playback (4× to 16×) no longer freezes on slower connections. The player now loads ahead of the clock, adapts the number of frames to the measured loading time and waits briefly instead of running away from the pictures.
+
+- RTSP recordings in which two frames carry the same timestamp could not be decoded for viewing; they now can.
+
+### Changed
+- Video minutes (H.265 and RTSP) become viewable while they are being decoded: the first picture appears after a fraction of a second instead of after the whole minute. The next minute is prepared in advance.
+- H.265 transcoding keeps the full value range of the JPEGs (0–255) instead of converting to the video range and back. Measured: about 2 dB better quality at the same file size. New minutes are roughly 10–15 % larger at the same quality setting; existing recordings stay as they are.
+- RTSP cameras: recording and live picture run in separate processes, so a stalled viewer can never slow down the recording. Live picture and detection frames are at most 1920 px wide; frames decoded for viewing at most 2560 px.
+- Half-written videos from an interrupted transcoding run are removed at start.
+
+### Removed
+- Support for zip archives from version 1.1 and the settings migration from 1.1. Anyone still on 1.1 must update to 1.4.0 first.
+
 ## 1.4.0 – 2026-11-11
 
 ### New

@@ -47,12 +47,15 @@ def with_credentials(url: str, username: str, password: str) -> str:
                        u.path, u.query, u.fragment))
 
 
-def ffmpeg_input(url: str) -> List[str]:
+LIVE_MAX_WIDTH = 1920        # Live-Bild und Erkennung von RTSP-Kameras: hoechstens so breit
+
+
+def ffmpeg_input(url: str, analyze_us: int = 3000000) -> List[str]:
     args = []
     if url.lower().startswith(("rtsp://", "rtsps://")):
         args += ["-rtsp_transport", "tcp", "-timeout", "10000000"]     # 10 s ohne Daten -> Abbruch
     # Zeitstempel = Empfangszeit: damit traegt jedes Bild seine echte Uhrzeit
-    return args + ["-analyzeduration", "3000000", "-use_wallclock_as_timestamps", "1", "-i", url]
+    return args + ["-analyzeduration", str(analyze_us), "-use_wallclock_as_timestamps", "1", "-i", url]
 
 
 def probe_stream(url: str, timeout: float = 25) -> dict:
@@ -106,8 +109,18 @@ class CameraWorker(threading.Thread):
         self._rec_kbps = 0.0
         self._stream: Optional[MobotixStream] = None
         self._procs: List[subprocess.Popen] = []
+        self.detect_on = lambda: True    # wird vom Kern gesetzt: laeuft die Erkennung ueberhaupt?
+        self._live_poke = 0.0            # letzter Abruf eines Einzelbildes (RTSP: Live-Bild nur bei Bedarf)
+        self.live_running = False
 
     # ------------------------------------------------------------ live
+    def poke_live(self) -> None:
+        """Jemand will ein aktuelles Bild - haelt bei RTSP-Kameras den Live-Dekoder am Laufen."""
+        self._live_poke = time.time()
+
+    def live_wanted(self) -> bool:
+        return bool(self.subs) or (bool(self.cfg.detect) and self.detect_on()) or time.time() - self._live_poke < 30
+
     def subscribe(self) -> asyncio.Queue:
         q: asyncio.Queue = asyncio.Queue(maxsize=2)
         self.subs.add(q)
@@ -229,6 +242,17 @@ class CameraWorker(threading.Thread):
         self._procs.append(p)
         return p
 
+    @staticmethod
+    def _kill(p: subprocess.Popen) -> None:
+        try:
+            p.terminate()
+            p.wait(timeout=5)
+        except (OSError, subprocess.TimeoutExpired):
+            try:
+                p.kill()
+            except OSError:
+                pass
+
     def _read_jpegs(self, proc: subprocess.Popen) -> None:
         """JPEGs aus der Ausgabe von ffmpeg lesen (Live-Bild und Erkennung)."""
         buf = bytearray()
@@ -300,6 +324,16 @@ class CameraWorker(threading.Thread):
                 pass
 
     def _run_video(self) -> None:
+        """RTSP-Kamera: aufzeichnen ohne Neukodierung; Live-Bild nur, solange es jemand braucht.
+
+        Zwei getrennte ffmpeg-Prozesse:
+          * Aufnahme: kopiert den Hauptstrom unveraendert in Minuten-Dateien. Dekodiert nichts und
+            kostet deshalb fast keine Rechenleistung. Laeuft immer.
+          * Live-Bild: dekodiert den Nebenstrom (oder, ohne Nebenstrom, den Hauptstrom) zu einigen
+            JPEGs pro Sekunde fuer Live-Ansicht und Erkennung. Laeuft nur, wenn die Erkennung fuer
+            diese Kamera an ist oder gerade jemand zusieht - sonst wird gar nicht dekodiert.
+        Weil die Prozesse getrennt sind, kann ein haengender Zuschauer die Aufnahme nie bremsen.
+        """
         c = self.cfg
         if not shutil.which("ffmpeg"):
             raise RuntimeError("ffmpeg ist nicht installiert")
@@ -315,46 +349,50 @@ class CameraWorker(threading.Thread):
         self.size = (info["width"], info["height"]) if info.get("width") else None
         self.codec = info.get("codec") or "video"
 
-        live = ["-map", "0:v:0", "-an", "-vf", "fps=%g" % max(0.5, c.live_fps), "-c:v", "mjpeg", "-q:v", "4",
-                "-f", "mjpeg", "pipe:1"]
         base = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin"]
-        # Hauptstrom: unveraendert (copy) in Minuten-Dateien schneiden
-        cmd = base + ffmpeg_input(url) + [
+        # Aufnahme: unveraendert (copy) in Minuten-Dateien schneiden
+        rec_cmd = base + ffmpeg_input(url) + [
             "-map", "0:v:0", "-c:v", "copy", "-an", "-f", "segment", "-segment_time", "60",
             "-segment_atclocktime", "1", "-segment_format", "matroska", "-strftime", "1",
             os.path.join(outdir, "%Y%m%d%H%M%S.mkv")]
-        if not sub:
-            cmd += live
+        # Live-Bild: wenige Bilder pro Sekunde, hoechstens LIVE_MAX_WIDTH breit, ohne Pufferung
+        live_cmd = base + ["-fflags", "nobuffer", "-flags", "low_delay"] + ffmpeg_input(sub or url, 1000000) + [
+            "-map", "0:v:0", "-an", "-vf", "fps=%g,scale='min(%d,iw)':-2" % (max(0.5, c.live_fps), LIVE_MAX_WIDTH),
+            "-c:v", "mjpeg", "-q:v", "4", "-f", "mjpeg", "pipe:1"]
         self._procs = []
-        main = self._spawn(cmd, pipe=not sub)
-        readers = []
-        if sub:
-            subp = self._spawn(base + ffmpeg_input(sub) + live, pipe=True)
-            readers.append(threading.Thread(target=self._read_jpegs, args=(subp,), daemon=True))
-        else:
-            readers.append(threading.Thread(target=self._read_jpegs, args=(main,), daemon=True))
-        for t in readers:
-            t.start()
+        main = self._spawn(rec_cmd, pipe=False)
+        live: Optional[subprocess.Popen] = None
+        live_retry = 0.0
         self.state, self.error = "online", ""
         self.connected_since = time.time()
-        log.info("[%s] verbunden (%s %sx%s, %s)", self.name_, self.codec, info.get("width"), info.get("height"),
-                 "mit Nebenstrom" if sub else "Live-Bild aus dem Hauptstrom")
+        log.info("[%s] verbunden (%s %sx%s, Live-Bild aus dem %s)", self.name_, self.codec, info.get("width"),
+                 info.get("height"), "Nebenstrom" if sub else "Hauptstrom")
+        last_scan = 0.0
         try:
             while not self.stop_evt.is_set() and main.poll() is None:
-                files = sorted(os.listdir(outdir))
-                for f in files[:-1]:                 # die juengste Datei wird noch geschrieben
-                    self._finalize(os.path.join(outdir, f))
-                self.stop_evt.wait(2)
+                now = time.time()
+                if live is not None and live.poll() is not None:        # Live-Dekoder beendet
+                    self._procs.remove(live)
+                    live, live_retry = None, now + 5
+                wanted = self.live_wanted()
+                if wanted and live is None and now >= live_retry:
+                    live = self._spawn(live_cmd, pipe=True)
+                    threading.Thread(target=self._read_jpegs, args=(live,), daemon=True).start()
+                elif not wanted and live is not None:
+                    self._kill(live)
+                    self._procs.remove(live)
+                    live = None
+                self.live_running = live is not None
+                if now - last_scan >= 2:
+                    last_scan = now
+                    files = sorted(os.listdir(outdir))
+                    for f in files[:-1]:                 # die juengste Datei wird noch geschrieben
+                        self._finalize(os.path.join(outdir, f))
+                self.stop_evt.wait(0.5)
         finally:
+            self.live_running = False
             for p in self._procs:
-                try:
-                    p.terminate()
-                    p.wait(timeout=5)
-                except (OSError, subprocess.TimeoutExpired):
-                    try:
-                        p.kill()
-                    except OSError:
-                        pass
+                self._kill(p)
             err = b""
             try:
                 err = main.stderr.read() if main.stderr else b""

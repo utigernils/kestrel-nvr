@@ -1,5 +1,25 @@
 # Changelog
 
+## 1.4.5 – 13.11.2026
+
+### Neu
+- Erkennung: Modelle mit End-to-End-Ausgabe (`[1, 300, 6]`, z. B. YOLO26) werden unterstützt. YOLO26n und YOLO26s liegen dem Paket bei und sind unter Einstellungen → Erkennung wählbar (Lizenz: AGPL-3.0, siehe `models/README.md`).
+- RTSP-Kameras: Das Live-Bild wird nur noch dekodiert, solange es gebraucht wird – wenn die Erkennung für die Kamera an ist oder jemand zusieht. Sonst wird gar nichts dekodiert.
+
+### Behoben
+- Schnelle Wiedergabe (4× bis 16×) bleibt bei langsameren Verbindungen nicht mehr stehen. Der Player lädt jetzt mit Vorlauf, passt die Zahl der Bilder an die gemessene Ladezeit an und wartet kurz, statt den Bildern davonzulaufen.
+
+- RTSP-Aufnahmen, in denen zwei Bilder denselben Zeitstempel tragen, ließen sich nicht zum Ansehen dekodieren; das geht jetzt.
+
+### Geändert
+- Video-Minuten (H.265 und RTSP) sind schon während des Dekodierens ansehbar: Das erste Bild erscheint nach Sekundenbruchteilen statt erst nach der ganzen Minute. Die nächste Minute wird im Voraus vorbereitet.
+- Die Umkodierung nach H.265 behält den vollen Wertebereich der JPEGs (0–255), statt in den Video-Bereich und zurück zu rechnen. Gemessen: rund 2 dB bessere Qualität bei gleicher Dateigröße. Neue Minuten werden bei gleicher Qualitätsstufe etwa 10–15 % größer; vorhandene Aufnahmen bleiben, wie sie sind.
+- RTSP-Kameras: Aufnahme und Live-Bild laufen in getrennten Prozessen, ein hängender Zuschauer kann die Aufnahme nie bremsen. Live-Bild und Erkennung sind höchstens 1920 px breit, zum Ansehen dekodierte Bilder höchstens 2560 px.
+- Halb geschriebene Videos eines abgebrochenen Umkodierlaufs werden beim Start entfernt.
+
+### Entfernt
+- Unterstützung für zip-Archive aus Version 1.1 und die Übernahme der Einstellungen aus 1.1. Wer noch 1.1 nutzt, muss zuerst auf 1.4.0 aktualisieren.
+
 ## 1.4.0 – 11.11.2026
 
 ### Neu

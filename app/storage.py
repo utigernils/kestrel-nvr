@@ -25,7 +25,6 @@ import shutil
 import subprocess
 import threading
 import time
-import zipfile
 from collections import OrderedDict
 from datetime import datetime, timezone
 from typing import List, Optional, Tuple
@@ -40,7 +39,7 @@ IDX = np.dtype([("ts", "<u8"), ("off", "<u4"), ("len", "<u4")])
 OFF = np.dtype([("off", "<u8"), ("len", "<u4")])
 MIN = 60_000
 HOUR = 3_600_000
-LEGACY_ZIP = "archive.zip"           # Archive aus Version 1.1
+VIEW_MAX_WIDTH = 2560                # zum Ansehen dekodierte Bilder hoechstens so breit (4K wird verkleinert)
 PAUSE_BELOW = 150e6                  # darunter wird nicht mehr geschrieben
 RESUME_ABOVE = 400e6
 DEFAULT_RATIO = 0.12                 # Annahme H.265/JPEG, bis genug gemessen ist
@@ -76,6 +75,22 @@ def split_jpegs(data: bytes) -> np.ndarray:
         e = starts[n + 1] if n + 1 < len(starts) else len(data)
         out[n] = (s, e - s)
     return out
+
+
+class _Decode:
+    """Laufendes oder fertiges Dekodieren einer Video-Minute nach cache/.
+
+    Die Bilder werden schon waehrend des Dekodierens nutzbar: `offs` waechst mit jedem fertigen
+    Bild, wartende Leser werden ueber `cond` geweckt.
+    """
+    __slots__ = ("path", "offs", "done", "cond", "proc")
+
+    def __init__(self, path: str):
+        self.path = path
+        self.offs: List[Tuple[int, int]] = []
+        self.done = False
+        self.cond = threading.Condition()
+        self.proc: Optional[subprocess.Popen] = None
 
 
 class Writer:
@@ -140,10 +155,10 @@ class Storage:
         shutil.rmtree(self.cache_root, ignore_errors=True)      # Reste vom letzten Lauf
         os.makedirs(self.cache_root, exist_ok=True)
         self._cache: "OrderedDict[tuple, np.ndarray]" = OrderedDict()
-        self._offs: "OrderedDict[str, np.ndarray]" = OrderedDict()
+        self._jobs: "OrderedDict[str, _Decode]" = OrderedDict()
         self._lock = threading.Lock()
         self._swap = threading.RLock()      # schuetzt den Wechsel .mjr -> .mkv
-        self._xlock = threading.Lock()      # ein Dekodiervorgang zur Zeit
+        self._slots = threading.Semaphore(2)    # hoechstens zwei Dekodiervorgaenge zugleich (aktuelle + naechste Minute)
         self.used_bytes = 0
         self.written_total = 0              # JPEG-Daten (werden spaeter umkodiert)
         self.written_final = 0              # bereits komprimierte Videodaten (RTSP-Kameras)
@@ -253,8 +268,6 @@ class Storage:
             return "jpeg"
         if os.path.exists(base + ".mkv"):
             return "video"
-        if os.path.exists(os.path.join(os.path.dirname(base), LEGACY_ZIP)):
-            return "zip"
         return "none"
 
     def _cache_path(self, cam: str, minute: int) -> str:
@@ -267,69 +280,121 @@ class Storage:
         except OSError:
             pass
 
-    def _decoded(self, cam: str, minute: int) -> Optional[Tuple[str, np.ndarray]]:
-        """H.265-Minute nach cache/ dekodieren. Liefert (Pfad, Offsets der Bilder)."""
-        cpath = self._cache_path(cam, minute)
-        with self._lock:
-            offs = self._offs.get(cpath)
-        if offs is not None and os.path.exists(cpath):
-            self._touch(cpath)
-            return cpath, offs
-        with self._xlock:
-            with self._lock:
-                offs = self._offs.get(cpath)
-            if offs is not None and os.path.exists(cpath):
-                return cpath, offs
-            src = self.base(cam, minute) + ".mkv"
-            if not os.path.exists(src) or not self.ffmpeg_ok:
-                return None
-            os.makedirs(os.path.dirname(cpath), exist_ok=True)
+    def _decode_run(self, job: _Decode, src: str, have_slot: bool) -> None:
+        """Eine Video-Minute mit ffmpeg nach M-JPEG dekodieren und die Bilder fortlaufend ablegen."""
+        if not have_slot:
+            self._slots.acquire()
+        tmp_ok = False
+        try:
+            os.makedirs(os.path.dirname(job.path), exist_ok=True)
             if shutil.disk_usage(self.cache_root).free < 600e6:
                 self._clean_cache(force=True)
-            tmp = cpath + ".tmp"
-            try:
-                subprocess.run(
-                    ["ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", "-y", "-i", src,
-                     "-fps_mode", "passthrough", "-an", "-c:v", "mjpeg", "-q:v", "3", "-f", "mjpeg", tmp],
-                    check=True, timeout=300, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
-                with open(tmp, "rb") as f:
-                    offs = split_jpegs(f.read())
-                os.replace(tmp, cpath)
-            except (subprocess.SubprocessError, OSError) as e:
-                log.warning("Dekodieren von %s fehlgeschlagen: %s", src, (getattr(e, "stderr", None) or b"")[-300:] or e)
+            proc = subprocess.Popen(
+                ["ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", "-i", src, "-an",
+                 # Bilder einfach durchzaehlen (setpts=N, Zeitbasis 1/1000): die echten Zeitstempel stehen
+                 # im Index. Gleiche Zeitstempel im Video (kommen bei RTSP vor) wuerden sonst das
+                 # Dekodieren abbrechen.
+                 "-vf", "setpts=N,scale='min(%d,iw)':-2" % VIEW_MAX_WIDTH, "-fps_mode", "passthrough",
+                 "-enc_time_base", "1:1000",
+                 "-c:v", "mjpeg", "-q:v", "3", "-f", "mjpeg", "pipe:1"],
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, stdin=subprocess.DEVNULL)
+            job.proc = proc
+            buf = bytearray()
+            pos = 0                              # Dateiposition des Pufferanfangs
+            start = -1                           # Beginn des offenen Bildes im Puffer
+            scan = 0
+            with open(job.path, "wb", buffering=0) as out:
+                while True:
+                    chunk = proc.stdout.read1(1 << 20)
+                    if chunk:
+                        out.write(chunk)
+                        buf += chunk
+                    fresh = []
+                    while True:                  # jedes Bild reicht von seinem SOI bis zum naechsten
+                        i = buf.find(b"\xff\xd8\xff", scan)
+                        if i < 0:
+                            scan = max(0, len(buf) - 2)
+                            break
+                        if start >= 0:
+                            fresh.append((pos + start, i - start))
+                        start, scan = i, i + 3
+                    if not chunk and start >= 0 and len(buf) > start:
+                        fresh.append((pos + start, len(buf) - start))        # letztes Bild
+                    if start > 0:                # Erledigtes aus dem Puffer werfen
+                        del buf[:start]
+                        pos += start
+                        scan -= start
+                        start = 0
+                    if fresh:
+                        with job.cond:
+                            job.offs.extend(fresh)
+                            job.cond.notify_all()
+                    if not chunk:
+                        break
+            err = proc.stderr.read()
+            tmp_ok = proc.wait() == 0 and bool(job.offs)
+            if not tmp_ok:
+                log.warning("Dekodieren von %s fehlgeschlagen: %s", src, err[-300:])
+        except (OSError, subprocess.SubprocessError) as e:
+            log.warning("Dekodieren von %s fehlgeschlagen: %s", src, e)
+        finally:
+            job.proc = None
+            self._slots.release()
+            if tmp_ok:
                 try:
-                    os.remove(tmp)
+                    self.cache_bytes += os.path.getsize(job.path)
                 except OSError:
                     pass
-                return None
-            self.cache_bytes += os.path.getsize(cpath)
-            with self._lock:
-                self._offs[cpath] = offs
-                while len(self._offs) > 400:
-                    self._offs.popitem(last=False)
-            return cpath, offs
+            else:
+                try:
+                    os.remove(job.path)
+                except OSError:
+                    pass
+                with self._lock:
+                    if self._jobs.get(job.path) is job:
+                        del self._jobs[job.path]
+                job.offs = []
+            with job.cond:
+                job.done = True
+                job.cond.notify_all()
 
-    def _from_zip(self, cam: str, minute: int) -> Optional[str]:
-        """Minute aus einem Archiv der Version 1.1 holen (bis es umgewandelt ist)."""
-        cpath = self._cache_path(cam, minute) + ".raw"
-        if os.path.exists(cpath):
-            self._touch(cpath)
-            return cpath
-        zpath = os.path.join(os.path.dirname(self.base(cam, minute)), LEGACY_ZIP)
-        with self._xlock:
-            if os.path.exists(cpath):
-                return cpath
-            try:
-                with zipfile.ZipFile(zpath) as z:
-                    info = z.getinfo(_parts(minute)[2] + ".mjr")
-                    os.makedirs(os.path.dirname(cpath), exist_ok=True)
-                    with z.open(info) as src, open(cpath + ".tmp", "wb") as dst:
-                        shutil.copyfileobj(src, dst, 1 << 20)
-                os.replace(cpath + ".tmp", cpath)
-                self.cache_bytes += info.file_size
-                return cpath
-            except (FileNotFoundError, KeyError, zipfile.BadZipFile, OSError):
+    def _decode_job(self, cam: str, minute: int, wait_slot: bool = True) -> Optional[_Decode]:
+        """Dekodiervorgang der Minute holen oder starten. None = kein Video (oder kein freier Platz)."""
+        cpath = self._cache_path(cam, minute)
+        with self._lock:
+            job = self._jobs.get(cpath)
+            if job is not None and (not job.done or os.path.exists(cpath)):
+                self._jobs.move_to_end(cpath)
+                return job
+            src = self.base(cam, minute) + ".mkv"
+            if not self.ffmpeg_ok or not os.path.exists(src):
                 return None
+            have_slot = self._slots.acquire(blocking=False)
+            if not have_slot and not wait_slot:
+                return None
+            job = self._jobs[cpath] = _Decode(cpath)
+            while len(self._jobs) > 400:
+                self._jobs.popitem(last=False)
+        threading.Thread(target=self._decode_run, args=(job, src, have_slot), daemon=True, name="decode").start()
+        return job
+
+    def _video_frame(self, cam: str, minute: int, i: int, total: int) -> Optional[bytes]:
+        """Bild i einer Video-Minute. Wartet nur, bis genau dieses Bild dekodiert ist."""
+        job = self._decode_job(cam, minute)
+        if job is None:
+            return None
+        deadline = time.time() + 120
+        with job.cond:
+            while len(job.offs) <= i and not job.done:
+                if not job.cond.wait(timeout=max(0.0, deadline - time.time())) and time.time() >= deadline:
+                    return None
+            if not job.offs:
+                return None
+            off, length = job.offs[min(i, len(job.offs) - 1)]
+        self._touch(job.path)
+        if i >= total // 2:                      # zweite Haelfte: die naechste Minute schon vorbereiten
+            self._decode_job(cam, minute + 1, wait_slot=False)
+        return self._pread(job.path, off, length)
 
     @staticmethod
     def _pread(path: str, off: int, length: int) -> Optional[bytes]:
@@ -359,21 +424,9 @@ class Storage:
             data = self._pread(base + ".mjr", int(rec["off"]), int(rec["len"]))
             if data is not None:
                 return int(rec["ts"]), data
-            if os.path.exists(base + ".mkv"):
-                dec = self._decoded(cam, minute)
-                if dec:
-                    path, offs = dec
-                    if len(offs):
-                        o = offs[min(i, len(offs) - 1)]
-                        data = self._pread(path, int(o["off"]), int(o["len"]))
-                        if data is not None:
-                            return int(rec["ts"]), data
-            else:
-                zp = self._from_zip(cam, minute)
-                if zp:
-                    data = self._pread(zp, int(rec["off"]), int(rec["len"]))
-                    if data is not None:
-                        return int(rec["ts"]), data
+            data = self._video_frame(cam, minute, i, len(arr))
+            if data is not None:
+                return int(rec["ts"]), data
         return None
 
     def timeline(self, cam: str, start: int, end: int) -> List[List[int]]:
@@ -480,9 +533,11 @@ class Storage:
         rc, err = self._run(
             ["ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
              "-f", "mjpeg", "-framerate", "25", "-i", mjr, "-an",
-             "-vf", "pad=ceil(iw/2)*2:ceil(ih/2)*2", "-fps_mode", "passthrough",
+             # JPEG nutzt den vollen Wertebereich (0-255). Er bleibt erhalten (yuvj420p): das
+             # Umrechnen auf den Video-Bereich und zurueck kostet messbar Qualitaet (rund 2 dB).
+             "-vf", "pad=ceil(iw/2)*2:ceil(ih/2)*2,format=yuvj420p", "-fps_mode", "passthrough",
              "-c:v", "libx265", "-preset", str(self.tcfg.preset), "-crf", str(int(self.tcfg.crf)),
-             "-pix_fmt", "yuv420p", "-threads", str(n),
+             "-color_range", "pc", "-threads", str(n),
              "-x265-params", "log-level=error:pools=%d:frame-threads=1" % n,
              "-f", "matroska", tmp], timeout=1800)
         ok = rc == 0
@@ -520,25 +575,6 @@ class Storage:
         self.tstats["cpu_seconds"] += time.time() - t0
         return True
 
-    def _unzip_legacy(self, path: str) -> None:
-        """Archiv aus Version 1.1 wieder in Minuten-Dateien zerlegen, damit es umkodiert wird."""
-        zpath = os.path.join(path, LEGACY_ZIP)
-        try:
-            with zipfile.ZipFile(zpath) as z:
-                need = sum(i.file_size for i in z.infolist())
-                if shutil.disk_usage(self.root).free < need + 1.5e9:
-                    return
-                with self._swap:
-                    for info in z.infolist():
-                        if info.filename.endswith((".mjr", ".idx")) and "/" not in info.filename:
-                            with z.open(info) as src, open(os.path.join(path, info.filename + ".tmp"), "wb") as dst:
-                                shutil.copyfileobj(src, dst, 1 << 20)
-                            os.replace(os.path.join(path, info.filename + ".tmp"), os.path.join(path, info.filename))
-                    os.remove(zpath)
-            log.info("Archiv aus Version 1.1 umgewandelt: %s", path)
-        except (zipfile.BadZipFile, OSError) as e:
-            log.warning("Altes Archiv %s nicht lesbar: %s", zpath, e)
-
     def transcode_pass(self) -> int:
         if not (self.tcfg and self.tcfg.enabled and self.ffmpeg_ok):
             return 0
@@ -551,9 +587,6 @@ class Storage:
                 continue
             try:
                 names = set(os.listdir(path))
-                if LEGACY_ZIP in names:
-                    self._unzip_legacy(path)
-                    names = set(os.listdir(path))
                 todo = sorted(n[:2] for n in names if n.endswith(".mjr") and n[:2] + ".skip" not in names)
                 if not todo:
                     continue
@@ -583,6 +616,10 @@ class Storage:
             log.warning("ffmpeg/ffprobe nicht gefunden - Umkodierung nach H.265 ist nicht moeglich")
             return
         self._stop.wait(20)
+        try:
+            self.remove_leftovers()
+        except Exception:
+            log.exception("Aufraeumen von Resten fehlgeschlagen")
         while not self._stop.is_set():
             try:
                 self.transcode_pass()
@@ -614,13 +651,14 @@ class Storage:
         now = time.time()
         for mtime, size, p in files:
             if force or now - mtime > max_age or total > limit:
-                if not force and now - mtime < 20:
-                    continue                    # wird gerade benutzt
+                job = self._jobs.get(p)
+                if (job is not None and not job.done) or (not force and now - mtime < 20):
+                    continue                    # wird gerade geschrieben oder benutzt
                 try:
                     os.remove(p)
                     total -= size
                     with self._lock:
-                        self._offs.pop(p, None)
+                        self._jobs.pop(p, None)
                 except OSError:
                     pass
         self.cache_bytes = max(0, total)
@@ -654,21 +692,17 @@ class Storage:
                 names = sorted(os.listdir(path))
             except OSError:
                 continue
-            if LEGACY_ZIP in names and hour0 + 60 <= cur_min:
-                shutil.rmtree(path, ignore_errors=True)
+            for mm in sorted({f[:2] for f in names if f.endswith((".mjr", ".idx", ".mkv"))}):
+                if hour0 + int(mm) >= cur_min - 1:
+                    return n
+                for ext in (".mjr", ".mkv", ".idx", ".skip"):
+                    try:
+                        os.remove(os.path.join(path, mm + ext))
+                    except OSError:
+                        pass
                 n += 1
-            else:
-                for mm in sorted({f[:2] for f in names if f.endswith((".mjr", ".idx", ".mkv"))}):
-                    if hour0 + int(mm) >= cur_min - 1:
-                        return n
-                    for ext in (".mjr", ".mkv", ".idx", ".skip"):
-                        try:
-                            os.remove(os.path.join(path, mm + ext))
-                        except OSError:
-                            pass
-                    n += 1
-                    if self._free() >= need:
-                        return n
+                if self._free() >= need:
+                    return n
             if self._free() >= need:
                 return n
         return n
@@ -795,6 +829,26 @@ class Storage:
                             "Bis sie aufgeholt hat, belegen Aufnahmen mehr Platz." % self.backlog_hours())
             self.warning_code, self.warning_params = "backlog", {"hours": round(self.backlog_hours())}
 
+    def remove_leftovers(self) -> int:
+        """Halb geschriebene Videos eines abgebrochenen Umkodierlaufs entfernen.
+
+        Ein Video wird erst nach bestandener Pruefung von .mkv.tmp auf seinen Namen umbenannt - was
+        noch .mkv.tmp heisst, ist nie gueltig gewesen. Laeuft im Umkodier-Thread vor dessen erstem
+        Durchgang, kann also keiner laufenden Umkodierung in die Quere kommen.
+        """
+        n = 0
+        for _, path in self._hours():
+            try:
+                for name in os.listdir(path):
+                    if name.endswith(".mkv.tmp"):
+                        os.remove(os.path.join(path, name))
+                        n += 1
+            except OSError:
+                pass
+        if n:
+            log.info("%d unfertige Dateien eines frueheren Laufs entfernt", n)
+        return n
+
     def run_cleanup(self) -> None:
         """Waechter: alle 10 s Platz pruefen, alle 2 min vollstaendig aufraeumen."""
         last_full = 0.0
@@ -822,12 +876,14 @@ class Storage:
 
     def stop(self) -> None:
         self._stop.set()
-        p = self._proc
-        if p:
-            try:
-                p.kill()
-            except OSError:
-                pass
+        with self._lock:
+            procs = [j.proc for j in self._jobs.values() if j.proc]
+        for p in [self._proc] + procs:
+            if p:
+                try:
+                    p.kill()
+                except OSError:
+                    pass
 
     def disk(self) -> dict:
         du = shutil.disk_usage(self.root)

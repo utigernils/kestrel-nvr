@@ -112,6 +112,7 @@ class Core:
         if not c.enabled or c.name in self.workers:
             return
         w = CameraWorker(c, self.storage, self.loop)
+        w.detect_on = lambda: bool(self.cfg.detect.enabled and self.detector)
         self.workers[c.name] = w
         w.start()
 
@@ -367,6 +368,12 @@ def cameras():
 
 def _latest(cam: str) -> Response:
     w = worker(cam)
+    w.poke_live()
+    if w.cfg.type == "rtsp" and w.state == "online":
+        # Der Live-Dekoder laeuft nur bei Bedarf: kurz warten, bis ein frisches Bild da ist.
+        deadline = time.time() + 8
+        while (not w.latest or time.time() * 1000 - w.latest[0] > 3000) and time.time() < deadline:
+            time.sleep(0.1)
     if not w.latest:
         fail(503, "no_frame", "Noch kein Bild")
     return Response(w.latest[1], media_type="image/jpeg", headers={"Cache-Control": "no-store"})
